@@ -1,4 +1,4 @@
-# Makefile for MO-Eval isolator
+# Makefile for Moe isolator
 # (c) 2012 Martin Mares <mj@ucw.cz>
 
 DIRS+=isolate
