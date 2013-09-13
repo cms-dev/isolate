@@ -1313,8 +1313,6 @@ init(void)
 
   cg_prepare();
   set_quota();
-
-  puts(box_dir);
 }
 
 static void
