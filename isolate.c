@@ -94,7 +94,9 @@ meta_open(const char *name)
       metafile = stdout;
       return;
     }
+  setreuid(geteuid(), getuid());
   metafile = fopen(name, "w");
+  setreuid(geteuid(), getuid());
   if (!metafile)
     die("Failed to open metafile '%s'",name);
 }
