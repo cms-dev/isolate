@@ -1,0 +1,8 @@
+We would like to acknowledge all the following people for contributing
+to isolate.
+
+Bernard Blackham <bernard@largestprime.net>
+Ronald Chan <ronalchn@gmail.com>
+Bjarki Ágúst Guðmundsson (aka SuprDewd) <suprdewd@gmail.com>
+Martin Mareš <mj@ucw.cz>
+Giovanni Mascellani <mascellani@poisson.phc.unipi.it>
