@@ -33,6 +33,14 @@
 #include <sys/quota.h>
 #include <sys/vfs.h>
 
+/* May not be defined in older glibc headers */
+#ifndef MS_PRIVATE
+#define MS_PRIVATE (1 << 18)
+#endif
+#ifndef MS_REC
+#define MS_REC     (1 << 14)
+#endif
+
 #define NONRET __attribute__((noreturn))
 #define UNUSED __attribute__((unused))
 #define ARRAY_SIZE(a) (int)(sizeof(a)/sizeof(a[0]))
