@@ -40,6 +40,7 @@
 #ifndef MS_REC
 #define MS_REC     (1 << 14)
 #endif
+#define MEM_BUF_SIZE 8192
 
 #define NONRET __attribute__((noreturn))
 #define UNUSED __attribute__((unused))
@@ -52,6 +53,7 @@ static int pass_environ;
 static int verbose;
 static int fsize_limit;
 static int memory_limit;
+static int soft_memory_limit;
 static int stack_limit;
 static int block_quota;
 static int inode_quota;
@@ -314,6 +316,46 @@ chowntree(char *path, uid_t uid, gid_t gid)
   chown_uid = uid;
   chown_gid = gid;
   nftw(path, chowntree_helper, 32, FTW_MOUNT | FTW_PHYS);
+}
+
+int max (int a, int b)
+{
+  return (a > b ? a : b);
+}
+
+int memusage (pid_t pid)
+{
+  char a[MEM_BUF_SIZE], *p, *q;
+  int data, stack;
+  int n, v, fd;
+
+  p = a;
+  sprintf (p, "/proc/%d/status", pid);
+  fd = open (p, O_RDONLY);
+  if (fd < 0)
+    err ("Error while opening status file");
+  do
+    n = read (fd, p, MEM_BUF_SIZE);
+  while ((n < 0) && (errno == EINTR));
+  if (n < 0)
+    err ("Error while reading status file");
+  do
+    v = close (fd);
+  while ((v < 0) && (errno == EINTR));
+  if (v < 0)
+    err ("Error closing status file");
+
+  data = stack = 0;
+  q = strstr (p, "VmData:");
+  if (q != NULL)
+    {
+      sscanf (q, "%*s %d", &data);
+      q = strstr (q, "VmStk:");
+      if (q != NULL)
+  sscanf (q, "%*s %d\n", &stack);
+    }
+
+  return (data + stack);
 }
 
 /*** Environment rules ***/
@@ -1104,44 +1146,60 @@ box_keeper(void)
       alarm(1);
     }
 
-  for(;;)
-    {
-      struct rusage rus;
-      int stat;
-      pid_t p;
-      if (timer_tick)
-	{
-	  check_timeout();
-	  timer_tick = 0;
-	}
-      p = wait4(box_pid, &stat, 0, &rus);
-      if (p < 0)
-	{
-	  if (errno == EINTR)
-	    continue;
-	  die("wait4: %m");
-	}
-      if (p != box_pid)
-	die("wait4: unknown pid %d exited!", p);
-      box_pid = 0;
 
-      // Check error pipe if there is an internal error passed from inside the box
-      char interr[1024];
-      int n = read(read_errors_from_fd, interr, sizeof(interr) - 1);
-      if (n > 0)
+  struct rusage rus;
+  int stat;
+  pid_t p;
+  int mem = 64;
+  do {
+    if(timer_tick)
+    {
+      check_timeout();
+      timer_tick = 0;
+    }
+    if(soft_memory_limit) {
+      mem = max (mem, memusage (box_pid));
+      if(mem > soft_memory_limit) {
+        kill(box_pid, SIGKILL);
+        kill(-box_pid, SIGKILL);
+      }
+    }
+
+    do
+      p = wait4(box_pid, &stat, WNOHANG | WUNTRACED, &rus);
+    while ((p < 0 && (errno != EINTR)));
+    if(p < 0)
+    {
+      if(errno == EINTR)
+        continue;
+      die("wait4: %m");
+    }
+  } while (p == 0);
+  if (p != box_pid)
+    die("wait4: unknown pid %d exited!", p);
+  box_pid = 0;
+
+  // Check error pipe if there is an internal error passed from inside the box
+  char interr[1024];
+  int n = read(read_errors_from_fd, interr, sizeof(interr) - 1);
+  if (n > 0)
 	{
 	  interr[n] = 0;
 	  die("%s", interr);
 	}
 
-      if (WIFEXITED(stat))
+  if(mem > soft_memory_limit) {
+    err("MLE: Memory limit exceeded");
+  }
+
+  if (WIFEXITED(stat))
 	{
 	  final_stats(&rus);
 	  if (WEXITSTATUS(stat))
-	    {
-	      meta_printf("exitcode:%d\n", WEXITSTATUS(stat));
-	      err("RE: Exited with error status %d", WEXITSTATUS(stat));
-	    }
+    {
+      meta_printf("exitcode:%d\n", WEXITSTATUS(stat));
+      err("RE: Exited with error status %d", WEXITSTATUS(stat));
+    }
 	  if (timeout && total_ms > timeout)
 	    err("TO: Time limit exceeded");
 	  if (wall_timeout && wall_ms > wall_timeout)
@@ -1152,21 +1210,20 @@ box_keeper(void)
 	      wall_ms/1000, wall_ms%1000);
 	  box_exit(0);
 	}
-      else if (WIFSIGNALED(stat))
+  else if (WIFSIGNALED(stat))
 	{
 	  meta_printf("exitsig:%d\n", WTERMSIG(stat));
 	  final_stats(&rus);
 	  err("SG: Caught fatal signal %d", WTERMSIG(stat));
 	}
-      else if (WIFSTOPPED(stat))
+  else if (WIFSTOPPED(stat))
 	{
 	  meta_printf("exitsig:%d\n", WSTOPSIG(stat));
 	  final_stats(&rus);
 	  err("SG: Stopped by signal %d", WSTOPSIG(stat));
 	}
-      else
-	die("wait4: unknown status %x, giving up!", stat);
-    }
+  else
+  	die("wait4: unknown status %x, giving up!", stat);
 }
 
 /*** The process running inside the box ***/
@@ -1437,7 +1494,7 @@ enum opt_code {
   OPT_CG_TIMING,
 };
 
-static const char short_opts[] = "b:c:d:eE:i:k:m:M:o:p::q:r:t:vw:x:";
+static const char short_opts[] = "b:c:d:eE:i:k:m:M:o:p::q:r:t:vw:x:s:";
 
 static const struct option long_opts[] = {
   { "box-id",		1, NULL, 'b' },
@@ -1465,6 +1522,7 @@ static const struct option long_opts[] = {
   { "verbose",		0, NULL, 'v' },
   { "version",		0, NULL, OPT_VERSION },
   { "wall-time",	1, NULL, 'w' },
+  { "soft-mem",   1, NULL, 's'},
   { NULL,		0, NULL, 0 }
 };
 
@@ -1545,6 +1603,9 @@ main(int argc, char **argv)
 	break;
       case 'x':
 	extra_timeout = 1000*atof(optarg);
+  break;
+      case 's':
+  soft_memory_limit = atoi(optarg);
 	break;
       case OPT_INIT:
       case OPT_RUN:
