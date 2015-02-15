@@ -83,6 +83,7 @@ static int cleanup_ownership;
 static struct timeval start_time;
 static int ticks_per_sec;
 static int total_ms, wall_ms;
+static int total_memory;
 static volatile sig_atomic_t timer_tick;
 
 static int error_pipes[2];
@@ -1127,6 +1128,19 @@ check_timeout(void)
 }
 
 static void
+check_memory(void)
+{
+  if(soft_memory_limit) {
+      total_memory = max (total_memory, memusage (box_pid));
+      if(verbose > 1)
+        fprintf(stderr, "[memory check: %d bytes", total_memory);
+      if(total_memory > soft_memory_limit) {
+        err("ML: Memory limit exceeded");
+      }
+  }
+}
+
+static void
 box_keeper(void)
 {
   read_errors_from_fd = error_pipes[0];
@@ -1153,19 +1167,12 @@ box_keeper(void)
   struct rusage rus;
   int stat;
   pid_t p;
-  int mem = 64;
   do {
-    usleep(MEM_INTERVAL);
     if(timer_tick)
     {
+      check_memory();
       check_timeout();
       timer_tick = 0;
-    }
-    if(soft_memory_limit) {
-      mem = max (mem, memusage (box_pid));
-      if(mem > soft_memory_limit) {
-        err("ML: Memory limit exceeded");
-      }
     }
 
     do
@@ -1194,6 +1201,8 @@ box_keeper(void)
   if (WIFEXITED(stat))
 	{
 	  final_stats(&rus);
+    if (soft_memory_limit && rus.ru_maxrss > soft_memory_limit)
+      err("ML: Memory limit exceeded");
 	  if (WEXITSTATUS(stat))
     {
       meta_printf("exitcode:%d\n", WEXITSTATUS(stat));
