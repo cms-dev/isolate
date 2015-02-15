@@ -41,6 +41,9 @@
 #define MS_REC     (1 << 14)
 #endif
 #define MEM_BUF_SIZE 8192
+#define MEM_INTERVAL 67 /* about 15 times a second                    *
+         * Is a good idea to use a prime number, as   *
+         * the users will not notice it (much)        */
 
 #define NONRET __attribute__((noreturn))
 #define UNUSED __attribute__((unused))
@@ -333,17 +336,17 @@ int memusage (pid_t pid)
   sprintf (p, "/proc/%d/status", pid);
   fd = open (p, O_RDONLY);
   if (fd < 0)
-    err ("Error while opening status file");
+    die ("Error while opening status file");
   do
     n = read (fd, p, MEM_BUF_SIZE);
   while ((n < 0) && (errno == EINTR));
   if (n < 0)
-    err ("Error while reading status file");
+    die ("Error while reading status file");
   do
     v = close (fd);
   while ((v < 0) && (errno == EINTR));
   if (v < 0)
-    err ("Error closing status file");
+    die ("Error closing status file");
 
   data = stack = 0;
   q = strstr (p, "VmData:");
@@ -1152,6 +1155,7 @@ box_keeper(void)
   pid_t p;
   int mem = 64;
   do {
+    usleep(MEM_INTERVAL);
     if(timer_tick)
     {
       check_timeout();
@@ -1160,8 +1164,7 @@ box_keeper(void)
     if(soft_memory_limit) {
       mem = max (mem, memusage (box_pid));
       if(mem > soft_memory_limit) {
-        kill(box_pid, SIGKILL);
-        kill(-box_pid, SIGKILL);
+        err("ML: Memory limit exceeded");
       }
     }
 
@@ -1187,10 +1190,6 @@ box_keeper(void)
 	  interr[n] = 0;
 	  die("%s", interr);
 	}
-
-  if(mem > soft_memory_limit) {
-    err("MLE: Memory limit exceeded");
-  }
 
   if (WIFEXITED(stat))
 	{
