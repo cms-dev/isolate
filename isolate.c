@@ -78,8 +78,9 @@ static int cleanup_ownership;
 
 static struct timeval start_time;
 static int ticks_per_sec;
+static long int page_size_kb;
 static int total_ms, wall_ms;
-static long int total_memory;
+static unsigned long total_memory;
 static volatile sig_atomic_t timer_tick;
 
 static int error_pipes[2];
@@ -1019,26 +1020,15 @@ read_proc_file(char *buf, char *name, int *fdp)
   buf[c] = 0;
 }
 
-long int memusage (pid_t pid)
+unsigned long memusage (pid_t pid)
 {
-  char buf[PROC_BUF_SIZE], *p, *q;
-  long int data, stack;
+  char buf[PROC_BUF_SIZE];
+  unsigned long data = 0;
   static int fd;
-  p = buf;
-
-  read_proc_file(p, "status", &fd);
-
-  data = stack = 0;
-  q = strstr (p, "VmData:");
-  if (q != NULL)
-    {
-      sscanf (q, "%*s %ld", &data);
-      q = strstr (q, "VmStk:");
-      if (q != NULL)
-  sscanf (q, "%*s %ld\n", &stack);
-    }
-
-  return (data + stack);
+  read_proc_file(buf, "statm", &fd);
+  if(sscanf(buf, "%*u %*u %*u %*u %*u %lu", &data) != 1)
+    die("proc statm syntax error 2");
+  return data * page_size_kb;
 }
 
 static int
@@ -1110,11 +1100,11 @@ static void
 check_memory(void)
 {
   if(soft_memory_limit) {
-    long int m = memusage(box_pid);
+    unsigned long m = memusage(box_pid);
     if(m > total_memory){
       total_memory = m;
       if(verbose > 1)
-        fprintf(stderr, "[memory check: %ld bytes]\n", total_memory);
+        fprintf(stderr, "[memory check: %lu kB]\n", total_memory);
       if(total_memory > soft_memory_limit) {
         err("ML: Memory limit exceeded");
       }
@@ -1122,6 +1112,7 @@ check_memory(void)
   }
 }
 
+#define INTERVAL 67 // The polling interval (roughly 13 times/sec)
 static void
 box_keeper(void)
 {
@@ -1137,6 +1128,9 @@ box_keeper(void)
   ticks_per_sec = sysconf(_SC_CLK_TCK);
   if (ticks_per_sec <= 0)
     die("Invalid ticks_per_sec!");
+  page_size_kb = sysconf(_SC_PAGE_SIZE) / 1024;
+  if (page_size_kb <= 0)
+    die("Invalid page_size_kb!");
 
   if (timeout || wall_timeout)
     {
@@ -1155,7 +1149,7 @@ box_keeper(void)
       check_timeout();
       timer_tick = 0;
     }
-    usleep(10);
+    usleep(INTERVAL);
     check_memory();
     do
       p = wait4(box_pid, &stat, WNOHANG | WUNTRACED, &rus);
@@ -1183,9 +1177,6 @@ box_keeper(void)
   if (WIFEXITED(stat))
 	{
 	  final_stats(&rus);
-    // fprintf(stderr, "%d: %ld > %d\n", soft_memory_limit, rus.ru_maxrss, soft_memory_limit);
-    if (soft_memory_limit && rus.ru_maxrss > soft_memory_limit)
-      err("ML: Memory limit exceeded");
 	  if (WEXITSTATUS(stat))
     {
       meta_printf("exitcode:%d\n", WEXITSTATUS(stat));
