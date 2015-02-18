@@ -40,10 +40,6 @@
 #ifndef MS_REC
 #define MS_REC     (1 << 14)
 #endif
-#define MEM_BUF_SIZE 8192
-#define MEM_INTERVAL 67 /* about 15 times a second                    *
-         * Is a good idea to use a prime number, as   *
-         * the users will not notice it (much)        */
 
 #define NONRET __attribute__((noreturn))
 #define UNUSED __attribute__((unused))
@@ -83,7 +79,7 @@ static int cleanup_ownership;
 static struct timeval start_time;
 static int ticks_per_sec;
 static int total_ms, wall_ms;
-static int total_memory;
+static long int total_memory;
 static volatile sig_atomic_t timer_tick;
 
 static int error_pipes[2];
@@ -320,46 +316,6 @@ chowntree(char *path, uid_t uid, gid_t gid)
   chown_uid = uid;
   chown_gid = gid;
   nftw(path, chowntree_helper, 32, FTW_MOUNT | FTW_PHYS);
-}
-
-int max (int a, int b)
-{
-  return (a > b ? a : b);
-}
-
-int memusage (pid_t pid)
-{
-  char a[MEM_BUF_SIZE], *p, *q;
-  int data, stack;
-  int n, v, fd;
-
-  p = a;
-  sprintf (p, "/proc/%d/status", pid);
-  fd = open (p, O_RDONLY);
-  if (fd < 0)
-    die ("Error while opening status file");
-  do
-    n = read (fd, p, MEM_BUF_SIZE);
-  while ((n < 0) && (errno == EINTR));
-  if (n < 0)
-    die ("Error while reading status file");
-  do
-    v = close (fd);
-  while ((v < 0) && (errno == EINTR));
-  if (v < 0)
-    die ("Error closing status file");
-
-  data = stack = 0;
-  q = strstr (p, "VmData:");
-  if (q != NULL)
-    {
-      sscanf (q, "%*s %d", &data);
-      q = strstr (q, "VmStk:");
-      if (q != NULL)
-  sscanf (q, "%*s %d\n", &stack);
-    }
-
-  return (data + stack);
 }
 
 /*** Environment rules ***/
@@ -1042,6 +998,7 @@ signal_int(int unused UNUSED)
 }
 
 #define PROC_BUF_SIZE 4096
+
 static void
 read_proc_file(char *buf, char *name, int *fdp)
 {
@@ -1060,6 +1017,28 @@ read_proc_file(char *buf, char *name, int *fdp)
   if (c >= PROC_BUF_SIZE-1)
     die("/proc/$pid/%s too long", name);
   buf[c] = 0;
+}
+
+long int memusage (pid_t pid)
+{
+  char buf[PROC_BUF_SIZE], *p, *q;
+  long int data, stack;
+  static int fd;
+  p = buf;
+
+  read_proc_file(p, "status", &fd);
+
+  data = stack = 0;
+  q = strstr (p, "VmData:");
+  if (q != NULL)
+    {
+      sscanf (q, "%*s %ld", &data);
+      q = strstr (q, "VmStk:");
+      if (q != NULL)
+  sscanf (q, "%*s %ld\n", &stack);
+    }
+
+  return (data + stack);
 }
 
 static int
@@ -1131,12 +1110,15 @@ static void
 check_memory(void)
 {
   if(soft_memory_limit) {
-      total_memory = max (total_memory, memusage (box_pid));
+    long int m = memusage(box_pid);
+    if(m > total_memory){
+      total_memory = m;
       if(verbose > 1)
-        fprintf(stderr, "[memory check: %d bytes", total_memory);
+        fprintf(stderr, "[memory check: %ld bytes]\n", total_memory);
       if(total_memory > soft_memory_limit) {
         err("ML: Memory limit exceeded");
       }
+    }
   }
 }
 
@@ -1170,11 +1152,11 @@ box_keeper(void)
   do {
     if(timer_tick)
     {
-      check_memory();
       check_timeout();
       timer_tick = 0;
     }
-
+    usleep(10);
+    check_memory();
     do
       p = wait4(box_pid, &stat, WNOHANG | WUNTRACED, &rus);
     while ((p < 0 && (errno != EINTR)));
@@ -1201,6 +1183,7 @@ box_keeper(void)
   if (WIFEXITED(stat))
 	{
 	  final_stats(&rus);
+    // fprintf(stderr, "%d: %ld > %d\n", soft_memory_limit, rus.ru_maxrss, soft_memory_limit);
     if (soft_memory_limit && rus.ru_maxrss > soft_memory_limit)
       err("ML: Memory limit exceeded");
 	  if (WEXITSTATUS(stat))
