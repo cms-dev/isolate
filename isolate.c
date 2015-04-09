@@ -52,6 +52,7 @@ static int pass_environ;
 static int verbose;
 static int fsize_limit;
 static int memory_limit;
+static int soft_memory_limit;
 static int stack_limit;
 static int block_quota;
 static int inode_quota;
@@ -77,7 +78,9 @@ static int cleanup_ownership;
 
 static struct timeval start_time;
 static int ticks_per_sec;
+static long int page_size_kb;
 static int total_ms, wall_ms;
+static unsigned long total_memory;
 static volatile sig_atomic_t timer_tick;
 
 static int error_pipes[2];
@@ -996,6 +999,7 @@ signal_int(int unused UNUSED)
 }
 
 #define PROC_BUF_SIZE 4096
+
 static void
 read_proc_file(char *buf, char *name, int *fdp)
 {
@@ -1014,6 +1018,17 @@ read_proc_file(char *buf, char *name, int *fdp)
   if (c >= PROC_BUF_SIZE-1)
     die("/proc/$pid/%s too long", name);
   buf[c] = 0;
+}
+
+unsigned long memusage (pid_t pid)
+{
+  char buf[PROC_BUF_SIZE];
+  unsigned long data = 0;
+  static int fd;
+  read_proc_file(buf, "statm", &fd);
+  if(sscanf(buf, "%*u %*u %*u %*u %*u %lu", &data) != 1)
+    die("proc statm syntax error 2");
+  return data * page_size_kb;
 }
 
 static int
@@ -1082,6 +1097,23 @@ check_timeout(void)
 }
 
 static void
+check_memory(void)
+{
+  if(soft_memory_limit) {
+    unsigned long m = memusage(box_pid);
+    if(m > total_memory){
+      total_memory = m;
+      if(verbose > 1)
+        fprintf(stderr, "[memory check: %lu kB]\n", total_memory);
+      if(total_memory > soft_memory_limit) {
+        err("ML: Memory limit exceeded");
+      }
+    }
+  }
+}
+
+#define INTERVAL 67 // The polling interval (roughly 13 times/sec)
+static void
 box_keeper(void)
 {
   read_errors_from_fd = error_pipes[0];
@@ -1096,6 +1128,9 @@ box_keeper(void)
   ticks_per_sec = sysconf(_SC_CLK_TCK);
   if (ticks_per_sec <= 0)
     die("Invalid ticks_per_sec!");
+  page_size_kb = sysconf(_SC_PAGE_SIZE) / 1024;
+  if (page_size_kb <= 0)
+    die("Invalid page_size_kb!");
 
   if (timeout || wall_timeout)
     {
@@ -1104,44 +1139,49 @@ box_keeper(void)
       alarm(1);
     }
 
-  for(;;)
-    {
-      struct rusage rus;
-      int stat;
-      pid_t p;
-      if (timer_tick)
-	{
-	  check_timeout();
-	  timer_tick = 0;
-	}
-      p = wait4(box_pid, &stat, 0, &rus);
-      if (p < 0)
-	{
-	  if (errno == EINTR)
-	    continue;
-	  die("wait4: %m");
-	}
-      if (p != box_pid)
-	die("wait4: unknown pid %d exited!", p);
-      box_pid = 0;
 
-      // Check error pipe if there is an internal error passed from inside the box
-      char interr[1024];
-      int n = read(read_errors_from_fd, interr, sizeof(interr) - 1);
-      if (n > 0)
+  struct rusage rus;
+  int stat;
+  pid_t p;
+  do {
+    if(timer_tick)
+    {
+      check_timeout();
+      timer_tick = 0;
+    }
+    usleep(INTERVAL);
+    check_memory();
+    do
+      p = wait4(box_pid, &stat, WNOHANG | WUNTRACED, &rus);
+    while ((p < 0 && (errno != EINTR)));
+    if(p < 0)
+    {
+      if(errno == EINTR)
+        continue;
+      die("wait4: %m");
+    }
+  } while (p == 0);
+  if (p != box_pid)
+    die("wait4: unknown pid %d exited!", p);
+  box_pid = 0;
+
+  // Check error pipe if there is an internal error passed from inside the box
+  char interr[1024];
+  int n = read(read_errors_from_fd, interr, sizeof(interr) - 1);
+  if (n > 0)
 	{
 	  interr[n] = 0;
 	  die("%s", interr);
 	}
 
-      if (WIFEXITED(stat))
+  if (WIFEXITED(stat))
 	{
 	  final_stats(&rus);
 	  if (WEXITSTATUS(stat))
-	    {
-	      meta_printf("exitcode:%d\n", WEXITSTATUS(stat));
-	      err("RE: Exited with error status %d", WEXITSTATUS(stat));
-	    }
+    {
+      meta_printf("exitcode:%d\n", WEXITSTATUS(stat));
+      err("RE: Exited with error status %d", WEXITSTATUS(stat));
+    }
 	  if (timeout && total_ms > timeout)
 	    err("TO: Time limit exceeded");
 	  if (wall_timeout && wall_ms > wall_timeout)
@@ -1152,21 +1192,20 @@ box_keeper(void)
 	      wall_ms/1000, wall_ms%1000);
 	  box_exit(0);
 	}
-      else if (WIFSIGNALED(stat))
+  else if (WIFSIGNALED(stat))
 	{
 	  meta_printf("exitsig:%d\n", WTERMSIG(stat));
 	  final_stats(&rus);
 	  err("SG: Caught fatal signal %d", WTERMSIG(stat));
 	}
-      else if (WIFSTOPPED(stat))
+  else if (WIFSTOPPED(stat))
 	{
 	  meta_printf("exitsig:%d\n", WSTOPSIG(stat));
 	  final_stats(&rus);
 	  err("SG: Stopped by signal %d", WSTOPSIG(stat));
 	}
-      else
-	die("wait4: unknown status %x, giving up!", stat);
-    }
+  else
+  	die("wait4: unknown status %x, giving up!", stat);
 }
 
 /*** The process running inside the box ***/
@@ -1435,7 +1474,7 @@ enum opt_code {
   OPT_CG_TIMING,
 };
 
-static const char short_opts[] = "b:c:d:eE:i:k:m:M:o:p::q:r:t:vw:x:";
+static const char short_opts[] = "b:c:d:eE:i:k:m:M:o:p::q:r:t:vw:x:s:";
 
 static const struct option long_opts[] = {
   { "box-id",		1, NULL, 'b' },
@@ -1463,6 +1502,7 @@ static const struct option long_opts[] = {
   { "verbose",		0, NULL, 'v' },
   { "version",		0, NULL, OPT_VERSION },
   { "wall-time",	1, NULL, 'w' },
+  { "soft-mem",   1, NULL, 's'},
   { NULL,		0, NULL, 0 }
 };
 
@@ -1543,6 +1583,9 @@ main(int argc, char **argv)
 	break;
       case 'x':
 	extra_timeout = 1000*atof(optarg);
+  break;
+      case 's':
+  soft_memory_limit = atoi(optarg);
 	break;
       case OPT_INIT:
       case OPT_RUN:

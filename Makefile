@@ -4,6 +4,10 @@
 
 isolate: isolate.c
 	gcc -o isolate isolate.c -O2 -Wall -Wno-parentheses -Wno-unused-result -g -std=c99
+install:
+	cp isolate /usr/local/bin/isolate
+	chown root /usr/local/bin/isolate
+	chmod u+s /usr/local/bin/isolate
 
 isolate.1: isolate.1.txt
 	a2x -f manpage -D . $<
