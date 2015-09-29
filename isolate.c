@@ -997,7 +997,7 @@ signal_alarm(int unused UNUSED)
   interval.it_value.tv_usec = (long int) MICROSEC_CHECK;
   interval.it_value.tv_sec = 0;
 
-  setitimer (ITIMER_REAL, &new, &old);
+  setitimer (ITIMER_REAL, &interval, &before);
 }
 
 static void
