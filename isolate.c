@@ -45,6 +45,8 @@
 #define UNUSED __attribute__((unused))
 #define ARRAY_SIZE(a) (int)(sizeof(a)/sizeof(a[0]))
 
+#define MICROSEC_CHECK 10000
+
 static int timeout;			/* milliseconds */
 static int wall_timeout;
 static int extra_timeout;
@@ -984,7 +986,18 @@ signal_alarm(int unused UNUSED)
 {
   /* Time limit checks are synchronous, so we only schedule them there. */
   timer_tick = 1;
-  alarm(1);
+
+  /* http://www.gnu.org/software/libc/manual/html_node/Setting-an-Alarm.html
+   * for more about the API */
+
+  struct itimerval interval, before;
+
+  interval.it_interval.tv_usec = 0;
+  interval.it_interval.tv_sec = 0;
+  interval.it_value.tv_usec = (long int) MICROSEC_CHECK;
+  interval.it_value.tv_sec = 0;
+
+  setitimer (ITIMER_REAL, &new, &old);
 }
 
 static void
@@ -1101,7 +1114,8 @@ box_keeper(void)
     {
       sa.sa_handler = signal_alarm;
       sigaction(SIGALRM, &sa, NULL);
-      alarm(1);
+
+      signal_alarm(1);
     }
 
   for(;;)
