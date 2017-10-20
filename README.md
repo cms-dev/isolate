@@ -1,3 +1,10 @@
+Important note
+==============
+
+This repository is only here for historical reasons. It is not used nor updated.
+The authoritative version of the isolate sandbox, also used in CMS, is
+[ioi/isolate](https://github.com/ioi/isolate).
+
 isolate
 =======
 
